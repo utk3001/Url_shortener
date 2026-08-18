@@ -1,10 +1,11 @@
 const express = require("express");
-const router = express.Router();
-const {short,getall,del,getOne} = require("../controllers/url.js")
+const { short, getOne } = require("../controllers/url");
 
-router.post('/',short)
-router.get('/',getall)
-router.post('/remove',del)
-router.get('/url/:code',getOne)
+module.exports = (createLimiter, redirectLimiter) => {
+  const router = express.Router();
 
-module.exports = router;
+  router.post("/shorten", createLimiter, short);
+  router.get("/:code", redirectLimiter, getOne);
+
+  return router;
+};
