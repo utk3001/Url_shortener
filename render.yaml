@@ -21,3 +21,5 @@ services:
     envVars:
       - key: REACT_APP_API_URL
         value: https://url-shortener-backend.onrender.com/api/v1
+
+# Force blueprint sync
