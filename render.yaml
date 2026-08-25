@@ -1,0 +1,32 @@
+services:
+  - type: redis
+    name: url-shortener-redis
+    plan: free
+    ipAllowList: []
+
+  - type: web
+    name: url-shortener-backend
+    env: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: url-shortener-redis
+          property: connectionString
+      - key: MONGO_URL
+        sync: false
+
+  - type: web
+    name: url-shortener-frontend
+    env: static
+    plan: free
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./build
+    envVars:
+      - key: REACT_APP_API_URL
+        value: https://url-shortener-backend.onrender.com/api/v1
