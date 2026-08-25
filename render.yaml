@@ -1,9 +1,4 @@
 services:
-  - type: redis
-    name: url-shortener-redis
-    plan: free
-    ipAllowList: []
-
   - type: web
     name: url-shortener-backend
     env: node
@@ -13,10 +8,7 @@ services:
     startCommand: node index.js
     envVars:
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: url-shortener-redis
-          property: connectionString
+        sync: false
       - key: MONGO_URL
         sync: false
 
