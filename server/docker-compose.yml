@@ -6,6 +6,7 @@ services:
     environment:
       - MONGO_URL=mongodb://mongo:27017/urlshortener
       - REDIS_URL=redis://redis:6379
+      - STANDALONE_WORKER=false
     depends_on:
       - mongo
       - redis

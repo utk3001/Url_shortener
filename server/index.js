@@ -6,6 +6,8 @@ const helmet = require("helmet");
 
 const { connectRedis } = require("./cache/redis");
 const { createRateLimiters } = require("./middleware/rateLimiter");
+const { getOne } = require("./controllers/url");
+const { startWorker } = require("./workers/analyticsWorker");
 const urlRoutes = require("./routes/url");
 const authRoutes = require("./routes/auth");
 
@@ -33,6 +35,14 @@ const startServer = async () => {
 
     // Mount URL routes (shorten, redirect, user dashboard)
     app.use("/api/v1", urlRoutes(createLimiter, redirectLimiter));
+
+    // Also support root redirect directly: GET /:code (e.g. http://localhost:3001/:code)
+    app.get("/:code", redirectLimiter, getOne);
+
+    // Auto-start background analytics worker in standalone mode (local dev or single-container deployments like Render)
+    if (process.env.STANDALONE_WORKER !== "false") {
+      startWorker().catch((err) => console.error("Worker startup error:", err));
+    }
 
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
