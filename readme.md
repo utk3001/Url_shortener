@@ -1,200 +1,167 @@
 # 🚀 Scalable URL Shortener
 
 A **production-grade URL shortening service** designed with scalability, low latency, and reliability in mind.  
-The system uses **Node.js, MongoDB, and Redis**, and is built around **cache-first redirects**, **distributed rate limiting**, **URL expiration**, and **asynchronous analytics**.
+The system uses **Node.js, MongoDB, and Redis**, and is built around **cache-first redirects**, **distributed sliding-window rate limiting**, **JWT authentication**, **URL expiration**, and **asynchronous click analytics**.
 
-This project is intentionally designed as a **system-design showcase**, not just a CRUD application.
+This project is intentionally designed as a **system-design showcase**, demonstrating performance engineering and distributed backend patterns.
 
 ---
 
 ## 📌 Problem Statement
 
 Design a URL shortening service that:
-- Generates short, unique URLs
-- Redirects users with **very low latency**
-- Scales under high read traffic
-- Prevents abuse
-- Supports URL expiration
-- Tracks click analytics efficiently
+- Generates short, deterministic unique URLs using Base62 encoding
+- Redirects users with **sub-10ms latency** on hot paths
+- Scales horizontally under high read traffic
+- Prevents abuse with cluster-wide sliding-window rate limiting
+- Supports user authentication via JWT and authenticated URL management
+- Enforces TTL-based URL expiration at runtime and database levels
+- Aggregates click analytics asynchronously without degrading redirect throughput
 
 ---
 
 ## 🧠 High-Level Architecture
 
-Client
-↓
-API Server (Node.js + Express)
-├── Redis
-│ ├── Redirect Cache
-│ ├── Distributed Rate Limiting
-│ └── Analytics Queue
-└── MongoDB
-└── Persistent URL Store (TTL-based expiration)
-↑
-Analytics Worker (Background Process)
-
+```
+Client (Web / Mobile / API)
+   │
+   ▼
+API Gateway / Server (Node.js + Express)
+   ├── JWT Auth & User Management (bcrypt + jsonwebtoken)
+   ├── Distributed Sliding-Window Rate Limiter (Redis ZSET + Lua Script)
+   ├── Redirect Cache (Redis Cache-Aside Layer)
+   └── Analytics Queue (Redis LPUSH Pipeline)
+         │
+         ├──► MongoDB (Persistent URL & User Store with TTL Indexes)
+         │
+         ▼
+Analytics Worker (Background BRPOP Consumer Process)
+   └── Updates MongoDB Click Counts Outside Critical Path
+```
 
 ---
 
 ## 🔑 Key Design Goals
 
-- **Fast redirects** (Redis-backed, no DB writes on hot path)
-- **Horizontal scalability**
-- **Abuse prevention**
-- **Eventual consistency** for analytics
-- **Environment-agnostic deployment** (Dockerized)
+- **Fast redirects**: Redis-backed cache-aside layer eliminating database round-trips on critical redirect paths.
+- **Sliding-window abuse prevention**: Distributed sliding-window rate limiter in Redis to avoid fixed-window boundary burst spikes across API clusters.
+- **Stateless authentication**: JWT auth allowing horizontal scaling of API nodes without shared session storage.
+- **Eventual consistency**: Click events enqueued to Redis and processed asynchronously by background workers.
+- **Environment-agnostic deployment**: Fully containerized using Docker and Docker Compose.
 
 ---
 
 ## ✨ Features
 
-### 1️⃣ URL Creation
-- Generates short codes using **Base62 encoding**
-- Stores mappings in MongoDB
-- Protected by Redis-backed rate limiting
+### 1️⃣ URL Creation & Base62 Encoding
+- Generates short codes using an atomic MongoDB sequence counter and **Base62 encoding** (`[0-9a-zA-Z]`).
+- Supports optional **TTL expiration** (in seconds).
+- Optional JWT authentication attaches created links to user accounts for dashboard tracking.
+- Protected by cluster-wide distributed rate limiting.
 
-**Endpoint**
-POST /api/v1/shorten
-
-
----
-
-### 2️⃣ Redirect Path (Hot Path)
-- Reads from Redis cache
-- Falls back to MongoDB on cache miss
-- Enqueues click event asynchronously
-- Redirects immediately (no database writes)
-
-**Endpoint**
-GET /api/v1/:shortCode
-
-
-📌 This keeps the redirect path extremely fast and scalable.
+**Endpoint**: `POST /api/v1/shorten`
 
 ---
 
-### 3️⃣ Caching Strategy (Cache-Aside)
-- Redis stores `shortCode → longURL`
-- Cache is populated on first access
-- Subsequent requests hit Redis directly
+### 2️⃣ Redirect Path (Hot Path) & Cache-Aside Layer
+- Reads destination URL directly from **Redis cache**.
+- Falls back to MongoDB only on cache misses, backfilling Redis with a 1-hour TTL.
+- Enqueues click events asynchronously to Redis (`analytics:clicks`) using `LPUSH`.
+- Performs HTTP 302 redirect immediately without blocking on database writes.
 
-**Why Redis?**
-- In-memory speed
-- Shared across instances
-- Supports caching, rate limiting, and queues
+**Endpoint**: `GET /api/v1/:code`
 
 ---
 
-### 4️⃣ URL Expiration
-- Optional expiration time per URL
-- Two-layer protection:
-  - Runtime expiration validation
-  - MongoDB TTL index for automatic cleanup
-
-📌 MongoDB TTL cleanup is asynchronous, so expired URLs may return `404` after deletion.
-
----
-
-### 5️⃣ Distributed Rate Limiting
-- Implemented using `express-rate-limit` with Redis
-- Enforces limits across multiple API instances
-- Prevents abuse on URL creation endpoints
+### 3️⃣ Distributed Sliding-Window Rate Limiting
+- Built directly on Redis using **Sorted Sets (`ZSET`)** and an atomic **Lua script**.
+- Stores request timestamps as scores with unique member tokens (`now:seq`).
+- On every request, atomically:
+  1. Cleans old entries with `ZREMRANGEBYSCORE` (`now - windowMs`).
+  2. Counts entries in the current sliding window with `ZCARD`.
+  3. Rejects with `429 Too Many Requests` if the limit is exceeded.
+  4. Records the request with `ZADD` and refreshes key TTL (`PEXPIRE`).
+- **Why Sliding-Window over Fixed-Window?** Fixed-window limiters allow 2x burst traffic around boundary resets. The sliding-window log guarantees strict per-client request quotas across distributed API clusters.
 
 ---
 
-### 6️⃣ Asynchronous Analytics
-- Redirects enqueue click events to Redis
-- Background worker consumes events
-- MongoDB updates happen outside the redirect hot path
-
-📌 Ensures redirect latency is unaffected by analytics writes.
+### 4️⃣ JWT Authentication & Analytics Dashboard
+- Secure user signup and login with **bcrypt password hashing** and signed **JSON Web Tokens (JWT)**.
+- Authenticated endpoints:
+  - `POST /api/v1/auth/register`
+  - `POST /api/v1/auth/login`
+  - `GET /api/v1/auth/me`
+  - `GET /api/v1/user/urls` (fetches all URLs and live click stats for user)
+- Interactive frontend dashboard to manage links and view live redirect metrics.
 
 ---
 
-## 🧪 Load Testing
+### 5️⃣ Dual-Layer URL Expiration (TTL)
+- **Application Layer**: Runtime check on redirect (`expiresAt < new Date()`), returning `410 Gone` if expired.
+- **Database Layer**: MongoDB TTL index (`expireAfterSeconds: 0`) for automatic background document cleanup.
 
-Load tested using **autocannon** after cache warm-up.
+---
 
-Concurrency: 100 clients
-Duration: 20 seconds
+### 6️⃣ Asynchronous Analytics Pipeline
+- Redirects push click events to Redis list `analytics:clicks` via non-blocking `LPUSH`.
+- Background worker process (`workers/analyticsWorker.js`) consumes events using blocking `BRPOP`.
+- Batch/eventual increment of click counters in MongoDB outside the HTTP request-response cycle.
 
+---
 
-### Results
-- **~12,000 requests/sec**
-- **~7.8 ms average latency**
-- **~12 ms p99 latency**
-- 0 failures (302 redirects counted as non-2xx)
+## 🧪 Load Testing (Autocannon)
 
-📌 Confirms Redis-backed redirects and effective cache-aside design.
+Load tested using **Autocannon** after cache warm-up:
+
+- **Concurrency**: 100 clients
+- **Duration**: 20 seconds
+- **Throughput**: **~12,000 requests/sec**
+- **Latency**: **~7.8 ms average latency**, **~12 ms p99 latency**
+- **Error Rate**: 0% failures (302 redirects)
 
 ---
 
 ## 🐳 Dockerized Deployment
 
-The entire system is containerized using **Docker Compose**.
+The entire system is containerized using **Docker Compose**:
 
-### Services
-- API Server
-- Analytics Worker
-- MongoDB
-- Redis
+```yaml
+services:
+  api:
+    build: .
+    ports: ["3001:3001"]
+  worker:
+    build: .
+    command: node workers/analyticsWorker.js
+  mongo:
+    image: mongo:7
+  redis:
+    image: redis:7
+```
 
 ### Run the system
 ```bash
 docker-compose up --build
-This starts all services with correct networking and configuration.
+```
 
-🔐 Configuration
-All infrastructure details are injected via environment variables:
+---
 
-MONGO_URL=...
-REDIS_URL=...
-This allows seamless switching between:
+## ⚖️ Design Trade-offs
 
-Local development
+| Decision | Rationale |
+|---|---|
+| **Redis vs In-Memory Cache** | In-memory cache breaks in multi-instance deployments; Redis provides shared state across clusters. |
+| **Sliding-Window vs Fixed-Window** | Sliding window prevents boundary burst attacks across API cluster nodes. |
+| **Stateless JWT vs Sessions** | Stateless JWT eliminates server-side session lookups, allowing independent API scaling. |
+| **Async Analytics Queue** | Decouples redirect response time from database write latency. |
+| **Base62 Counter vs UUID/Hash** | Produces short, predictable, collision-free URLs without truncation issues. |
 
-Docker-based environments
+---
 
-Production (e.g., MongoDB Atlas)
+## 🎯 Summary
 
-⚖️ Design Trade-offs
-Decision	Rationale
-Redis vs in-memory cache	Required for horizontal scaling
-Async analytics	Keeps redirect latency minimal
-MongoDB TTL	Avoids manual cleanup jobs
-Base62 counter	Simple, deterministic, URL-friendly
-Cache-aside pattern	Explicit control over cache behavior
-📈 Scalability Considerations
-API servers can scale horizontally
-
-Redis acts as shared state
-
-MongoDB handles persistence only
-
-Analytics worker can scale independently
-
-Redirect hot path avoids database writes
-
-🧩 Future Improvements
-Authentication and per-user quotas
-
-Custom aliases
-
-Analytics dashboard
-
-Bloom filter for faster existence checks
-
-CDN in front of redirect endpoint
-
-🎯 Summary
 This project demonstrates:
-
-Real-world system design principles
-
-Performance-oriented backend architecture
-
-Proper separation of hot and cold paths
-
-Distributed systems thinking
-
-It is designed not just to work, but to scale.
+- High-throughput, low-latency backend architecture
+- Strict separation between critical hot paths and asynchronous cold paths
+- Cluster-aware rate limiting with Redis atomic scripts
+- Production security practices with JWT and password hashing

@@ -7,6 +7,7 @@ const helmet = require("helmet");
 const { connectRedis } = require("./cache/redis");
 const { createRateLimiters } = require("./middleware/rateLimiter");
 const urlRoutes = require("./routes/url");
+const authRoutes = require("./routes/auth");
 
 dotenv.config();
 
@@ -22,12 +23,15 @@ const startServer = async () => {
     await mongoose.connect(process.env.MONGO_URL);
     console.log("Connected to Database");
 
-    await connectRedis(); // 🔥 Redis is open NOW
+    await connectRedis(); // Redis connected
 
-    // Create limiters AFTER Redis is ready
+    // Create distributed sliding-window limiters AFTER Redis is ready
     const { createLimiter, redirectLimiter } = createRateLimiters();
 
-    // Inject them into routes
+    // Mount Auth routes (JWT registration, login, profile)
+    app.use("/api/v1/auth", authRoutes);
+
+    // Mount URL routes (shorten, redirect, user dashboard)
     app.use("/api/v1", urlRoutes(createLimiter, redirectLimiter));
 
     app.listen(port, () => {

@@ -16,11 +16,17 @@ const urlSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     expiresAt: {
       type: Date,
       default: null,
       index: {
-        expireAfterSeconds: 0, // TTL index
+        expireAfterSeconds: 0, // TTL index for automatic expiration cleanup
       },
     },
   },

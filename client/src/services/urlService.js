@@ -6,3 +6,7 @@ export const shortenUrl = (long, ttl) => {
     ttl: ttl ? Number(ttl) : undefined,
   });
 };
+
+export const getUserUrls = () => {
+  return apiClient.get("/user/urls");
+};
